@@ -174,7 +174,16 @@ func (app *App) runWebsocket(babyUID string, conn *client.WebsocketConnection, c
 			if updatedBabyUID == babyUID && stateUpdate.StreamState != nil && *stateUpdate.StreamState == baby.StreamState_Unhealthy {
 				// Prevent duplicate request if we already received failure
 				if app.BabyStateManager.GetBabyState(babyUID).GetStreamRequestState() != baby.StreamRequestState_RequestFailed {
-					go initializeLocalStreaming()
+					go func() {
+						// The RTMP publisher just died (EOF, reset, or a read
+						// timeout - see rtmpserver.handleConnection). Tell the
+						// camera that session stopped before asking for a new
+						// one, so Nanit's cloud releases the connection slot
+						// instead of holding it until its own stale-session
+						// timeout expires.
+						sendStopStreaming(babyUID, app.getLocalStreamURL(babyUID), conn)
+						initializeLocalStreaming()
+					}()
 				}
 			}
 		})
