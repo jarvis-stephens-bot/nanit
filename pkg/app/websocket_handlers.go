@@ -43,6 +43,35 @@ const (
 	streamRetryMaxBackoff     = 5 * time.Minute
 )
 
+// sendStopStreaming sends a single PUT_STREAMING STOPPED request and does not
+// retry or block the caller on the camera's response.
+//
+// A publisher that dies without a clean FIN/RST (EOF, reset, or a read
+// timeout) leaves our WebSocket session registered as still streaming from
+// Nanit's point of view. Nanit's cloud then holds the "Mobile App connection"
+// slot for that session until its own stale-session timeout expires — which
+// is unbounded and can take minutes to hours (see
+// _System/research/nanit-lockout-reliability-2026-10.md). Explicitly telling
+// the camera the session stopped gives Nanit's cloud an immediate reason to
+// release the slot instead of waiting out that timeout, mirroring the fix
+// GhostOnyx/homebridge-nanit-pro shipped in v1.1.13 for the same failure mode.
+func sendStopStreaming(babyUID string, targetURL string, conn *client.WebsocketConnection) {
+	log.Info().Str("target", targetURL).Msg("Sending explicit stop for dead publisher before reconnecting")
+
+	awaitResponse := conn.SendRequest(client.RequestType_PUT_STREAMING, &client.Request{
+		Streaming: &client.Streaming{
+			Id:       client.StreamIdentifier(client.StreamIdentifier_MOBILE).Enum(),
+			RtmpUrl:  utils.ConstRefStr(targetURL),
+			Status:   client.Streaming_Status(client.Streaming_STOPPED).Enum(),
+			Attempts: utils.ConstRefInt32(1),
+		},
+	})
+
+	if _, err := awaitResponse(10 * time.Second); err != nil {
+		log.Warn().Err(err).Msg("Explicit stop request did not complete; continuing with reconnect regardless")
+	}
+}
+
 func requestLocalStreaming(babyUID string, targetURL string, streamingStatus client.Streaming_Status, conn *client.WebsocketConnection, stateManager *baby.StateManager) {
 	timeoutBackoff := streamRetryInitialBackoff
 
@@ -71,6 +100,7 @@ func requestLocalStreaming(babyUID string, targetURL string, streamingStatus cli
 			if err.Error() == "Forbidden: Number of Mobile App connections above limit, declining connection" {
 				log.Warn().Err(err).Msg("Too many app connections, waiting for local connection to become available...")
 				stateManager.Update(babyUID, *baby.NewState().SetStreamRequestState(baby.StreamRequestState_RequestFailed))
+				sendStopStreaming(babyUID, targetURL, conn)
                                 time.Sleep(300 * time.Second)
 				continue
 			} else if err.Error() != "Request timeout" {
