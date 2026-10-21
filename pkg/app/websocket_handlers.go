@@ -55,10 +55,21 @@ const (
 // the camera the session stopped gives Nanit's cloud an immediate reason to
 // release the slot instead of waiting out that timeout, mirroring the fix
 // GhostOnyx/homebridge-nanit-pro shipped in v1.1.13 for the same failure mode.
+//
+// We do not wait for a response. Live observation (13/13 attempts over
+// 2026-10-18 to 2026-10-21, see
+// _System/research/nanit-lockout-drops-and-stop-timeout-2026-10-21.md) found
+// the camera never acknowledges a STOPPED for a session it already considers
+// dead — including on a freshly reconnected, otherwise-healthy websocket — so
+// the prior 10s blocking wait only ever timed out, adding dead time to every
+// reconnect cycle for no information gained. homebridge-nanit-pro's own
+// reference fix for this same failure mode (v1.1.13) does not wait for a
+// response either: it writes the STOPPED message and moves on. Sending the
+// request is what matters to Nanit's cloud; waiting for its ack is not.
 func sendStopStreaming(babyUID string, targetURL string, conn *client.WebsocketConnection) {
 	log.Info().Str("target", targetURL).Msg("Sending explicit stop for dead publisher before reconnecting")
 
-	awaitResponse := conn.SendRequest(client.RequestType_PUT_STREAMING, &client.Request{
+	conn.SendRequest(client.RequestType_PUT_STREAMING, &client.Request{
 		Streaming: &client.Streaming{
 			Id:       client.StreamIdentifier(client.StreamIdentifier_MOBILE).Enum(),
 			RtmpUrl:  utils.ConstRefStr(targetURL),
@@ -66,10 +77,6 @@ func sendStopStreaming(babyUID string, targetURL string, conn *client.WebsocketC
 			Attempts: utils.ConstRefInt32(1),
 		},
 	})
-
-	if _, err := awaitResponse(10 * time.Second); err != nil {
-		log.Warn().Err(err).Msg("Explicit stop request did not complete; continuing with reconnect regardless")
-	}
 }
 
 func requestLocalStreaming(babyUID string, targetURL string, streamingStatus client.Streaming_Status, conn *client.WebsocketConnection, stateManager *baby.StateManager) {

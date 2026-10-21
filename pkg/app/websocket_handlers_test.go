@@ -144,9 +144,11 @@ func TestSendStopStreaming_SendsStoppedStatus(t *testing.T) {
 	assert.Equal(t, "rtmp://example/local/baby-1", req.Streaming.GetRtmpUrl())
 }
 
-func TestSendStopStreaming_DoesNotPanicOnTimeout(t *testing.T) {
-	// Camera never responds - sendStopStreaming must not block the caller
-	// past its own timeout, and must not panic or otherwise abort.
+func TestSendStopStreaming_DoesNotBlockOnMissingResponse(t *testing.T) {
+	// Camera never responds - sendStopStreaming must return immediately
+	// regardless, since live observation found the camera never acks a
+	// STOPPED for an already-dead session (see
+	// _System/research/nanit-lockout-drops-and-stop-timeout-2026-10-21.md).
 	server := newFakeCameraServer(func(req *client.Request) fakeResponse {
 		return fakeResponse{respond: false}
 	})
@@ -162,8 +164,8 @@ func TestSendStopStreaming_DoesNotPanicOnTimeout(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("sendStopStreaming did not return after its own request timeout")
+	case <-time.After(1 * time.Second):
+		t.Fatal("sendStopStreaming blocked waiting for a response it was not supposed to await")
 	}
 
 	requireNextRequest(t, server, 2*time.Second)
